@@ -7,7 +7,6 @@ import re
 import sys
 import os
 import time
-import hashlib
 from datetime import datetime
 from pathlib import Path
 
@@ -19,10 +18,6 @@ def sanitize_filename(name: str) -> str:
     for ch in r'\/:*?"<>|':
         name = name.replace(ch, "_")
     return name.strip()[:80]
-
-
-def file_hash(path: Path) -> str:
-    return hashlib.md5(path.read_bytes()).hexdigest()
 
 
 def load_state() -> dict:
