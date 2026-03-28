@@ -44,7 +44,7 @@ Here's how...
 ## Installation
 
 ```
-/plugin install github:KunW.7/conversation-logger
+/plugin install github:KunW777/conversation-logger
 ```
 
 Then run:
