@@ -1,0 +1,7 @@
+{
+  "name": "conversation-logger",
+  "description": "Auto-save Claude Code conversation history as Markdown files via a Stop hook. Use when users want to set up automatic conversation logging.",
+  "author": {
+    "name": "Kun"
+  }
+}
