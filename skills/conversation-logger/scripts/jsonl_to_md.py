@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Claude Code Stop hook: 将当前 session 的对话历史保存为 Markdown 文件。
 # 保存位置: D:/ai对话记录/<项目名>/<标题>.md
-# state 以 session_id 为 key，session rename 时自动重命名 MD 文件。
+# state 以 session_id 为 key，用 last_line 追踪 JSONL 处理位置。
 import json
 import re
 import sys
@@ -84,9 +84,11 @@ def main():
     custom_title = None
     first_timestamp = None
     project_cwd = None
+    total_lines = 0
 
     with open(transcript_path, "r", encoding="utf-8") as f:
-        for line in f:
+        for line_num, line in enumerate(f, 1):
+            total_lines = line_num
             line = line.strip()
             if not line:
                 continue
@@ -109,7 +111,7 @@ def main():
                     first_timestamp = ts
                 if not project_cwd:
                     project_cwd = entry.get("cwd", "")
-                messages.append({"role": "user", "content": text})
+                messages.append({"role": "user", "content": text, "line": line_num})
 
             elif entry_type == "assistant":
                 content = entry.get("message", {}).get("content", [])
@@ -118,21 +120,19 @@ def main():
                     continue
                 if text.strip() in ("No response requested.", "No response requested"):
                     continue
-                messages.append({"role": "assistant", "content": text})
+                messages.append({"role": "assistant", "content": text, "line": line_num})
 
     if not messages:
         sys.exit(0)
 
-    # 合并连续的同角色消息
-    merged = [messages[0]]
+    # 合并连续的同角色消息，保留第一条的行号
+    merged = [messages[0].copy()]
     for msg in messages[1:]:
         if msg["role"] == merged[-1]["role"]:
             merged[-1]["content"] += "\n\n" + msg["content"]
+            # 保持 line 为该组第一条的行号，不更新
         else:
-            merged.append(msg)
-    messages = merged
-
-    total = len(messages)
+            merged.append(msg.copy())
 
     # 项目名和日期
     project_name = Path(project_cwd).name if project_cwd else "unknown"
@@ -145,27 +145,31 @@ def main():
     else:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
-    # 当前应有的文件名（由最新 title 决定）
+    # 当前应有的文件名
     title = custom_title or session_id
     safe_title = sanitize_filename(title)
     output_dir = OUTPUT_ROOT / project_name
     output_dir.mkdir(parents=True, exist_ok=True)
     current_file = output_dir / f"{safe_title}.md"
 
-    # 以 session_id 为 key 读取状态
+    # 读取 state（兼容旧的 msg_count 格式）
     state = load_state()
-    prev = state.get(session_id, {"file": None, "msg_count": 0})
-    prev_file = Path(prev["file"]) if prev["file"] else None
-    prev_count = prev["msg_count"]
+    prev = state.get(session_id, {"file": None, "last_line": 0})
+    prev_file = Path(prev["file"]) if prev.get("file") else None
+    prev_last_line = prev.get("last_line", 0)
 
-    # 如果有旧文件且名字和当前不同 → 更新 frontmatter title 并重命名
+    # 旧格式迁移：有 msg_count 但没有 last_line → 重置为 0 触发全量重写
+    if "msg_count" in prev and "last_line" not in prev:
+        prev_last_line = 0
+
+    # 如果有旧文件且名字不同 → 更新 frontmatter title 并重命名
     if prev_file and prev_file.exists() and prev_file != current_file:
         content = prev_file.read_text(encoding="utf-8")
         content = re.sub(r"^title: .+$", f"title: {title}", content, count=1, flags=re.MULTILINE)
         prev_file.write_text(content, encoding="utf-8")
         prev_file.rename(current_file)
 
-    if not current_file.exists() or prev_count == 0:
+    if not current_file.exists() or prev_last_line == 0:
         # 首次写入：生成完整文件
         header = "\n".join([
             "---",
@@ -175,20 +179,20 @@ def main():
             f"session_id: {session_id}",
             "---", "",
         ])
-        body = "".join(build_turn(m) for m in messages)
+        body = "".join(build_turn(m) for m in merged)
         current_file.write_text(header + body, encoding="utf-8")
 
     else:
-        # 追加新轮次
-        new_messages = messages[prev_count:]
+        # 追加：只写入行号 > prev_last_line 的新消息
+        new_messages = [m for m in merged if m["line"] > prev_last_line]
         if not new_messages:
             sys.exit(0)
         addition = "".join(build_turn(m) for m in new_messages)
         existing = current_file.read_text(encoding="utf-8")
         current_file.write_text(existing.rstrip("\n") + "\n\n" + addition, encoding="utf-8")
 
-    # 更新状态（以 session_id 为 key）
-    state[session_id] = {"file": str(current_file), "msg_count": total}
+    # 更新 state：存 last_line（JSONL 总行数）
+    state[session_id] = {"file": str(current_file), "last_line": total_lines}
     save_state(state)
 
 
